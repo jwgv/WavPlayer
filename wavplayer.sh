@@ -194,6 +194,72 @@ animate() {
     printf "%s\n" "${pink}${bright}${text}${reset}"
 }
 
+# ── Metadata helpers (Artist/Album) ───────────────────────────────
+# Try to get artist/album from media tags via ffprobe; fall back to path inference.
+trim() {
+    local s="$*"
+    # shellcheck disable=SC2001
+    s=$(sed -e 's/^\s\+//' -e 's/\s\+$//' <<<"$s")
+    printf '%s' "$s"
+}
+
+ffprobe_tag() {
+    local file="$1"; shift
+    local tag="$1"
+    command -v ffprobe >/dev/null 2>&1 || { printf ''; return; }
+    ffprobe -v error -show_entries "format_tags=${tag}" -of default=nw=1:nk=1 "$file" 2>/dev/null | head -n1
+}
+
+infer_artist_album_from_path() {
+    local file="$1"
+    local parent grandparent artist album
+    parent=$(basename -- "$(dirname -- "$file")")
+    grandparent=$(basename -- "$(dirname -- "$(dirname -- "$file")")")
+
+    # Heuristics:
+    # 1) If parent looks like "Artist - Album" (common), split it.
+    if [[ "$parent" == *" - "* ]]; then
+        artist="${parent%% - *}"
+        album="${parent#* - }"
+    else
+        # 2) Use grandparent as artist, parent as album if grandparent is non-trivial
+        artist="$grandparent"
+        album="$parent"
+    fi
+
+    artist=$(trim "$artist")
+    album=$(trim "$album")
+    printf '%s\t%s' "$artist" "$album"
+}
+
+get_artist_album() {
+    local file="$1"
+    local artist album
+
+    # Prefer tags via ffprobe if available
+    artist=$(ffprobe_tag "$file" artist)
+    album=$(ffprobe_tag "$file" album)
+
+    artist=$(trim "$artist")
+    album=$(trim "$album")
+
+    if [[ -z "$artist" && -z "$album" ]]; then
+        # Fallback to path inference
+        IFS=$'\t' read -r artist album < <(infer_artist_album_from_path "$file")
+    fi
+
+    printf '%s\t%s' "$artist" "$album"
+}
+
+# Get title from metadata (via ffprobe). Returns empty if unavailable.
+get_title() {
+    local file="$1"
+    local title
+    title=$(ffprobe_tag "$file" title)
+    title=$(trim "$title")
+    printf '%s' "$title"
+}
+
 # ── Favorites helpers ────────────────────────────────────────────
 is_favorite() {
     local track="$1"
@@ -383,6 +449,15 @@ while :; do
     REPLAY=0
 
     name="$(basename "$sfile")"
+    # Filename without extension for cleaner fallback display
+    base_name="${name%.*}"
+    # Prefer embedded title (via ffprobe) when available; fallback to filename
+    title="$(get_title "$sfile" || true)"
+    if [[ -n "$title" ]]; then
+        display_name="$title"
+    else
+        display_name="$base_name"
+    fi
 
     # Favorite icon
     if is_favorite "$sfile"; then
@@ -395,7 +470,14 @@ while :; do
 
     # Do NOT clear here, so the "🎵WavPlayer 🎵" header stays visible.
     echo
-    echo -e "${ORANGE}Now playing:${R} ${BOLD}${GREEN}${name}${R} ${PINK}[$FAV_ICON]${R}"
+    echo -e "${ORANGE}Now playing:${R} ${BOLD}${GREEN}${display_name}${R} ${PINK}[$FAV_ICON]${R}"
+    # Artist/Album (from metadata via ffprobe, or inferred from path)
+    artist=""; album=""
+    IFS=$'\t' read -r artist album < <(get_artist_album "$sfile" || true) || true
+    if [[ -n "$artist" || -n "$album" ]]; then
+        [[ -n "$artist" ]] && echo -e "${BLUE}Artist: ${YELLOW}${artist}${R}"
+        [[ -n "$album" ]] && echo -e "${BLUE}Album:  ${YELLOW}${album}${R}"
+    fi
     if [[ "$FAVORITES_ONLY" -eq 1 ]]; then
         echo -e "${BLUE}Source: ${YELLOW}Favorites list${R}"
     else
