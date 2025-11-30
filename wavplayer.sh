@@ -388,6 +388,7 @@ trap 'on_exit' EXIT
 REPLAY=0
 last_played=""
 current_index=0
+no_files_retries=0
 
 while :; do
     # ── Choose track (respect REPLAY, favorites, random, alphabetical) ───────
@@ -399,14 +400,31 @@ while :; do
             if (( ${#files[@]} == 0 )); then
                 echo -e "${RED}No valid favorites found in ${FAV_FILE}.${R}"
                 echo -e "${YELLOW}Add favorites with 'f' during playback, then restart with -f.${R}"
+                (( no_files_retries++ ))
+                if (( no_files_retries >= 3 )); then
+                    echo -e "${RED}No playable files found after 3 retries. Exiting.${R}"
+                    exit 1
+                fi
                 sleep 5
                 continue
             fi
         else
             while IFS= read -r -d '' f; do files+=("$f"); done < \
                 <(find -L "$DIR" -type f \( -iname "*.wav" -o -iname "*.aiff" -o -iname "*.mp3" -o -iname "*.m4a" -o -iname "*.aac" -o -iname "*.aifc" -o -iname "*.flac" -o -iname "*.ogg" \) -print0 2>/dev/null | sort -z)
-            (( ${#files[@]} == 0 )) && { echo -e "${RED}No files – retrying in 5s…${R}"; sleep 5; continue; }
+            if (( ${#files[@]} == 0 )); then
+                echo -e "${RED}No files – retrying in 5s…${R}"
+                (( no_files_retries++ ))
+                if (( no_files_retries >= 3 )); then
+                    echo -e "${RED}No playable files found after 3 retries. Exiting.${R}"
+                    exit 1
+                fi
+                sleep 5
+                continue
+            fi
         fi
+
+        # Reset retry counter once we have files to play
+        no_files_retries=0
 
         if [[ "$RANDOM_MODE" -eq 1 ]]; then
             if (( ${#files[@]} == 1 )); then
